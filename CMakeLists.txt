@@ -194,5 +194,7 @@ include_directories(
 # catkin_add_nosetests(test)
 
 add_executable(YOLO_template_matching src/YOLO_template_matching.cpp)
+add_executable(face_tracker src/face_tracker.cpp)
 
 target_link_libraries(YOLO_template_matching ${catkin_LIBRARIES})
+target_link_libraries(face_tracker ${catkin_LIBRARIES})

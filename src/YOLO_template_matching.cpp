@@ -9,6 +9,7 @@
 #include <opencv2/gpu/gpu.hpp>
 #include <face_tracker/rect.h>
 #include <face_tracker/templMatch.h>
+#include <geometry_msgs/Point.h>
 
 using namespace std;
 using namespace cv;
@@ -19,12 +20,14 @@ int TEMPLATES_RECEIVED = 0;
 int FRAME_W;
 int FRAME_H;
 int FRAME_AREA;
+int NUM_FACES;
+int FRAME_COUNT = 0;
 float TEMPL_SCALE;
 Mat FULL_FRAME;
-//vector<Mat> TEMPLATES;
-//vector<Rect> ROI_COORDS;
-Mat TEMPLATES;
-Rect ROI_COORDS;
+vector<Mat> TEMPLATES;
+vector<Rect> ROI_COORDS;
+//Mat TEMPLATES;
+//Rect ROI_COORDS;
 
 // define template matching class to run algorithm
 class yoloTemplateMatching
@@ -34,6 +37,7 @@ class yoloTemplateMatching
   image_transport::ImageTransport it;
   image_transport::Subscriber image_sub;
   ros::Subscriber template_sub;
+  ros::Publisher face_center_pub;
 
 public:
   yoloTemplateMatching() : it(nh)
@@ -43,6 +47,7 @@ public:
 		&yoloTemplateMatching::frameCallback, this);
 	template_sub = nh.subscribe("/YOLO_templates", 1,
 		&yoloTemplateMatching::templatesCallback, this);
+	face_center_pub = nh.advertise<geometry_msgs::Point>("ROI_coordinate", 1);
   }
 
   ~yoloTemplateMatching()
@@ -71,11 +76,13 @@ private:
 
   int checkThreshold(Mat matchingResult)
   {
+	Mat checkResult = matchingResult.clone();
+
 	// check template max and min values of template matching and compare to threshold
-	float threshold = 0.4;
+	float threshold = 0.3;
 	double minCheck, maxCheck;
 	Point minLocCheck, maxLocCheck;
-	minMaxLoc(matchingResult, &minCheck, &maxCheck, &minLocCheck, &maxLocCheck);
+	minMaxLoc(checkResult, &minCheck, &maxCheck, &minLocCheck, &maxLocCheck);
 
 	// if threshold surpassed, return a failure flag
 	if (minCheck > threshold) return 1;
@@ -86,74 +93,89 @@ private:
   {
 	// create local copies of full frame, templates, and ROI coordinates
 	Mat full_frame = FULL_FRAME.clone();
-	Mat templates = TEMPLATES.clone();
-	Rect roi_coords = ROI_COORDS;
 
-	// extract search frame out of full frame using ROI coordinates
-	Mat searchFrame = full_frame.clone()(roi_coords);
+	for (int i = 0; i < NUM_FACES; i++) {
+	  Mat templates = TEMPLATES[i].clone();
+	  Rect roi_coords = ROI_COORDS[i];
 
-	// define matrix to contain template matching results
-	Mat matchingResult;
+	  // extract search frame out of full frame using ROI coordinates
+	  Mat searchFrame = full_frame.clone()(roi_coords);
 
-	// run template matching
-	matchTemplate(searchFrame, templates, matchingResult, CV_TM_SQDIFF_NORMED);
+	  // define matrix to contain template matching results
+	  Mat matchingResult;
 
-	// check if template matching failed to find a good result
-        int TMfailure = checkThreshold(matchingResult);
+	  // run template matching
+	  matchTemplate(searchFrame, templates, matchingResult, CV_TM_SQDIFF_NORMED);
 
-	// if template matching does not fail
-	if (TMfailure == 0) {
+	  // check if template matching failed to find a good result
+          int TMfailure = checkThreshold(matchingResult);
 
-	  // normalize results between 0 and 1
-	  normalize(matchingResult, matchingResult, 0, 1, NORM_MINMAX, -1, Mat());
+	  // if template matching does not fail
+	  if (TMfailure == 0 && FRAME_COUNT < 30) {
 
-	  // find location of best match
-	  double min, max;
-	  Point minLoc, maxLoc;
-	  minMaxLoc(matchingResult, &min, &max, &minLoc, &maxLoc);
+	    // normalize results between 0 and 1
+	    normalize(matchingResult, matchingResult, 0, 1, NORM_MINMAX, -1, Mat());
 
-	  // convert template dimensions into a bounding box and expand it back
-	  // to original cropped dimensions
-	  Rect templ_bbox;
-	  templ_bbox.width = templates.cols;
-	  templ_bbox.height = templates.rows;
-	  templ_bbox.x = minLoc.x + roi_coords.x;
-	  templ_bbox.y = minLoc.y + roi_coords.y;
+	    // find location of best match
+	    double min, max;
+	    Point minLoc, maxLoc;
+	    minMaxLoc(matchingResult, &min, &max, &minLoc, &maxLoc);
 
-	  // get distance between old ROI coordinates and new ROI coordinates
-	  int xdiff = minLoc.x - (roi_coords.width/2 - templates.cols/2);
-	  int ydiff = minLoc.y - (roi_coords.height/2 - templates.rows/2);
+	    // convert template dimensions into a bounding box and expand it back
+	    // to original cropped dimensions
+	    Rect templ_bbox;
+	    templ_bbox.width = templates.cols;
+	    templ_bbox.height = templates.rows;
+	    templ_bbox.x = minLoc.x + roi_coords.x;
+	    templ_bbox.y = minLoc.y + roi_coords.y;
 
-          // apply smoother to ROI coordinate movement to reduce drift
-	  int movement_thresh = 30;
-	  if (xdiff > movement_thresh) xdiff = movement_thresh;
-	  if (ydiff > movement_thresh) ydiff = movement_thresh;
+	    // get distance between old ROI coordinates and new ROI coordinates
+	    int xdiff = minLoc.x - (roi_coords.width/2 - templates.cols/2);
+	    int ydiff = minLoc.y - (roi_coords.height/2 - templates.rows/2);
 
-	  // update search ROI coordinates
-	  ROI_COORDS.x = roi_coords.x + xdiff;
-	  ROI_COORDS.y = roi_coords.y + ydiff;
+            // apply smoother to ROI coordinate movement to reduce drift
+	    int movement_thresh = 50;
+	    if (xdiff > movement_thresh) xdiff = movement_thresh;
+	    if (ydiff > movement_thresh) ydiff = movement_thresh;
 
-	  // make sure new ROI coordinates do not extend beyond frame dimensions
-	  if (ROI_COORDS.x < 0) ROI_COORDS.x = 0;
-	  if (ROI_COORDS.y < 0) ROI_COORDS.y = 0;
-	  if (ROI_COORDS.x + ROI_COORDS.width > FRAME_W) ROI_COORDS.width = FRAME_W - ROI_COORDS.x;
-	  if (ROI_COORDS.y + ROI_COORDS.height > FRAME_H) ROI_COORDS.height = FRAME_H - ROI_COORDS.y;
+	    // update search ROI coordinates
+	    float x_momentum = 0.6;
+	    float y_momentum = 0.3;
+	    ROI_COORDS[i].x = roi_coords.x + xdiff + xdiff*x_momentum;
+	    ROI_COORDS[i].y = roi_coords.y + ydiff + ydiff*y_momentum;
 
-	  // convert template size back to original cropped dimensions and save bbox
-	  Rect bbox = getCroppedDimensions(templ_bbox, 1/TEMPL_SCALE);
+	    // make sure new ROI coordinates do not extend beyond frame dimensions
+	    if (ROI_COORDS[i].x < 0) ROI_COORDS[i].x = 0;
+	    if (ROI_COORDS[i].y < 0) ROI_COORDS[i].y = 0;
+	    if (ROI_COORDS[i].x + ROI_COORDS[i].width > FRAME_W) ROI_COORDS[i].width = FRAME_W - ROI_COORDS[i].x;
+	    if (ROI_COORDS[i].y + ROI_COORDS[i].height > FRAME_H) ROI_COORDS[i].height = FRAME_H - ROI_COORDS[i].y;
 
-	  // draw template matched bbox
-	  Point topLeftCorner = Point(bbox.x, bbox.y);
-	  Point botRightCorner = Point(bbox.x + bbox.width, bbox.y + bbox.height);
-	  rectangle(full_frame, topLeftCorner, botRightCorner, Scalar(255), 2);
+	    // convert template size back to original cropped dimensions and save bbox
+	    Rect bbox = getCroppedDimensions(templ_bbox, 1/TEMPL_SCALE);
+
+	    // draw template matched bbox
+	    Point topLeftCorner = Point(bbox.x, bbox.y);
+	    Point botRightCorner = Point(bbox.x + bbox.width, bbox.y + bbox.height);
+	    rectangle(full_frame, topLeftCorner, botRightCorner, Scalar(0,255,255), 2);
+
+	    // draw template matched bbox center
+	    Point face_center(bbox.x + bbox.width/2, bbox.y + bbox.height/2);
+	    circle(full_frame, face_center, 2, Scalar(255,0,255), 2, 8, 0);
+
+	    // publish focal point for face tracking
+	    geometry_msgs::Point focal_point;
+	    focal_point.x = face_center.x;
+	    focal_point.y = face_center.y;
+	    //face_center_pub.publish(focal_point);
+	  }
+
+          // display full frame, search image, and template image
+	  imshow("search ROI", searchFrame);
+          waitKey(3);
+
+          imshow("template frame", templates);
+          waitKey(3);
 	}
-
-	// display full frame, search image, and template image
-	imshow("search ROI", searchFrame);
-        waitKey(3);
-
-        imshow("template frame", templates);
-        waitKey(3);
 
         imshow("face detector", full_frame);
         waitKey(3);
@@ -176,6 +198,7 @@ private:
 	// if templates received from YOLO node, run template matching
 	if (cv_ptr && TEMPLATES_RECEIVED == 1) {
 	  FULL_FRAME = cv_ptr->image.clone();
+FRAME_COUNT++;
 	  runTemplateMatching();
 	}
 	return;
@@ -184,32 +207,35 @@ private:
   void templatesCallback(const face_tracker::templMatch msg)
   {
 	TEMPLATES_RECEIVED = 1;
+FRAME_COUNT = 0;
 
 	int num = msg.num;
 
 	// if faces found, define templates and ROI coordinates
 	if (num != 0) {
 	  TEMPL_SCALE = msg.scale;
+	  NUM_FACES = num;
 
-	  // convert image message into cv mat
-  	  cv_bridge::CvImagePtr cv_template;
-  	  cv_template = cv_bridge::toCvCopy(msg.templates[0], sensor_msgs::image_encodings::BGR8);
-	  //TEMPLATES.clear();
-	  //ROI_COORDS.clear();
+	  TEMPLATES.clear();
+	  ROI_COORDS.clear();
 
-	  //TEMPLATES.push_back(cv_template->image.clone());
-	  TEMPLATES = cv_template->image.clone();
+	  for (int i = 0; i < num; i++) {
+	  	// convert image message into cv mat
+  	  	cv_bridge::CvImagePtr cv_template;
+  	  	cv_template = cv_bridge::toCvCopy(msg.templates[i], sensor_msgs::image_encodings::BGR8);
 
-	  // get ROI coordinates from message
-  	  face_tracker::rect rect_msg = msg.ROIcoords[0];
-  	  Rect searchROI;
-  	  searchROI.x = rect_msg.x;
-  	  searchROI.y = rect_msg.y;
-  	  searchROI.width = rect_msg.w;
-  	  searchROI.height = rect_msg.h;
+		TEMPLATES.push_back(cv_template->image.clone());
 
-	  //ROI_COORDS.push_back(searchROI);
-	  ROI_COORDS = searchROI;
+       	  	// get ROI coordinates from message
+  	  	face_tracker::rect rect_msg = msg.ROIcoords[i];
+  	  	Rect searchROI;
+  	  	searchROI.x = rect_msg.x;
+  	  	searchROI.y = rect_msg.y;
+  	  	searchROI.width = rect_msg.w;
+  	  	searchROI.height = rect_msg.h;
+
+	  	ROI_COORDS.push_back(searchROI);
+	  }
 	}
  	return;
   }
