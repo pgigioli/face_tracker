@@ -52,6 +52,8 @@ find_package(catkin REQUIRED COMPONENTS
    FILES
    rect.msg
    templMatch.msg
+   imageArray.msg
+   stringArray.msg
  )
 
 ## Generate services in the 'srv' folder

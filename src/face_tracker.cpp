@@ -4,13 +4,19 @@
 #include <sstream>
 #include <iostream>
 #include <string>
+#include <std_msgs/Int8.h>
 
 using namespace std;
 
+float PAN_ZERO = 0.0;
+float TILT_ZERO = -5.0;
+int WAIT_TO_RECENTER = 0;
+int FOUND_OBJECT = 0;
+
 float image_width;
 float image_height;
-float pan_angle = 0;
-float tilt_angle = 0;
+float pan_angle = PAN_ZERO;
+float tilt_angle = TILT_ZERO;
 
 // pan/tilt ranges. Pan range = 189 degress, Tilt range = 102 degrees
 // 1 degree horizontally = 47.41 steps, 1 degree vertically = 37.65 steps
@@ -32,11 +38,13 @@ class faceTracker
   ros::NodeHandle nh;
   ros::Subscriber coord_sub;
   ros::Publisher cam_angles;
+  ros::Subscriber found_object_sub;
 
 public:
   faceTracker()
   {
 	this->resetPanTilt();
+	found_object_sub = nh.subscribe("/found_object", 1, &faceTracker::foundObjectCb, this);
 	coord_sub = nh.subscribe("/ROI_coordinate", 1, &faceTracker::callback, this);
 	cam_angles = nh.advertise<std_msgs::Float64MultiArray>("/cam_angles", 1);
   }
@@ -48,7 +56,7 @@ public:
 
   void resetPanTilt()
   {
-	float delay = 1.0;
+	float delay = 1.5;
 	string command1 = "uvcdynctrl -s \"Tilt Reset\" 1";
 	string command2 = "uvcdynctrl -s \"Pan Reset\" 1";
 	system(command1.c_str());
@@ -68,11 +76,28 @@ private:
 	cam_angles.publish(anglesArray);
   }
 
+  void foundObjectCb(std_msgs::Int8 msg)
+  {
+	if (msg.data == 1) {
+	   FOUND_OBJECT = 1;
+	} else if (msg.data == 0) {
+
+	   FOUND_OBJECT = 0;
+           WAIT_TO_RECENTER++;
+
+           if (WAIT_TO_RECENTER > 5) {
+              recenterCam();
+           }
+	}
+  }
+
   void recenterCam()
   {
 	cout << "recentering cam" << endl;
-	float buffer_pos = 3.0;
-	float buffer_neg = -3.0;
+	float tilt_buffer_pos = -18.0;
+	float tilt_buffer_neg = -23.0;
+	float pan_buffer_pos = 3.0;
+	float pan_buffer_neg = -3.0;
 	float delay = 0.1;
 
         float tiltIncr_1 = tiltIncr5;
@@ -81,25 +106,25 @@ private:
         string panIncrString_1 = panIncrString5;
 
 
-	if (pan_angle < buffer_neg) {
+	if (pan_angle < pan_buffer_neg) {
 	  pan_angle += panIncr_1;
           string command = "uvcdynctrl -s \"Pan (relative)\" -- " + panIncrString_1;
           system(command.c_str());
           ros::Duration(delay).sleep();
 	}
-	if (pan_angle > buffer_pos) {
+	if (pan_angle > pan_buffer_pos) {
 	  pan_angle -= panIncr_1;
 	  string command = "uvcdynctrl -s \"Pan (relative)\" -- -" + panIncrString_1;
 	  system(command.c_str());
 	  ros::Duration(delay).sleep();
 	}
-	if (tilt_angle < buffer_neg) {
+	if (tilt_angle < tilt_buffer_neg) {
 	  tilt_angle += tiltIncr_1;
 	  string command = "uvcdynctrl -s \"Tilt (relative)\" -- " + tiltIncrString_1;
 	  system(command.c_str());
           ros::Duration(delay).sleep();
 	}
-	if (tilt_angle > buffer_pos) {
+	if (tilt_angle > tilt_buffer_pos) {
 	  tilt_angle -= tiltIncr_1;
 	  string command = "uvcdynctrl -s \"Tilt (relative)\" -- -" + tiltIncrString_1;
 	  system(command.c_str());
@@ -111,6 +136,8 @@ private:
         if (pan_angle > pan_max) { pan_angle = pan_max; }
         if (pan_angle < pan_min) { pan_angle = pan_min; }
 
+        publishCamAngles(pan_angle, tilt_angle);
+
 	cout << "pan: " << pan_angle << endl;
         cout << "tilt: " << tilt_angle << endl;
 
@@ -119,7 +146,8 @@ private:
 
   void callback(const geometry_msgs::Point::ConstPtr& msg)
   {
-  	if (msg->z == 0.0) {
+  	if (FOUND_OBJECT == 1) {
+	WAIT_TO_RECENTER = 0;
 	float center_x = msg->x;
   	float center_y = msg->y;
 	//cout << "x: " << center_x << endl;
@@ -237,7 +265,6 @@ private:
 	cout << "pan: " << pan_angle << endl;
 	cout << "tilt: " << tilt_angle << endl;
    	}
-	if (msg->z == 1.0) recenterCam();
   }
 };
 

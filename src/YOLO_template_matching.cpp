@@ -9,6 +9,7 @@
 #include <opencv2/gpu/gpu.hpp>
 #include <face_tracker/rect.h>
 #include <face_tracker/templMatch.h>
+#include <face_tracker/stringArray.h>
 #include <geometry_msgs/Point.h>
 
 using namespace std;
@@ -26,6 +27,7 @@ float TEMPL_SCALE;
 Mat FULL_FRAME;
 vector<Mat> TEMPLATES;
 vector<Rect> ROI_COORDS;
+vector<string> LABELS;
 //Mat TEMPLATES;
 //Rect ROI_COORDS;
 
@@ -38,6 +40,7 @@ class yoloTemplateMatching
   image_transport::Subscriber image_sub;
   ros::Subscriber template_sub;
   ros::Publisher face_center_pub;
+  ros::Subscriber labels_sub;
 
 public:
   yoloTemplateMatching() : it(nh)
@@ -48,10 +51,17 @@ public:
 	template_sub = nh.subscribe("/YOLO_templates", 1,
 		&yoloTemplateMatching::templatesCallback, this);
 	face_center_pub = nh.advertise<geometry_msgs::Point>("ROI_coordinate", 1);
+
+	// subscribe to labels from face recognition node
+	labels_sub = nh.subscribe("/face_labels", 1,
+		&yoloTemplateMatching::labelsCallback, this);
+
+        cv::namedWindow("Face Detector", WINDOW_NORMAL);
   }
 
   ~yoloTemplateMatching()
   {
+	cv:destroyWindow("Face Detector");
   }
 
 private:
@@ -158,6 +168,11 @@ private:
 	    Point botRightCorner = Point(bbox.x + bbox.width, bbox.y + bbox.height);
 	    rectangle(full_frame, topLeftCorner, botRightCorner, Scalar(0,255,255), 2);
 
+	    // draw label on bounding box
+	    if (i+1 <= LABELS.size()) putText(full_frame, LABELS[i],
+		Point(bbox.x, bbox.y+bbox.height+15), FONT_HERSHEY_PLAIN, 1.0,
+		CV_RGB(255,165,0), 2.0);
+
 	    // draw template matched bbox center
 	    Point face_center(bbox.x + bbox.width/2, bbox.y + bbox.height/2);
 	    circle(full_frame, face_center, 2, Scalar(255,0,255), 2, 8, 0);
@@ -170,14 +185,14 @@ private:
 	  }
 
           // display full frame, search image, and template image
-	  imshow("search ROI", searchFrame);
-          waitKey(3);
+	//  imshow("search ROI", searchFrame);
+         // waitKey(3);
 
-          imshow("template frame", templates);
-          waitKey(3);
+          //imshow("template frame", templates);
+          //waitKey(3);
 	}
 
-        imshow("face detector", full_frame);
+        imshow("Face Detector", full_frame);
         waitKey(3);
         return;
   }
@@ -198,7 +213,7 @@ private:
 	// if templates received from YOLO node, run template matching
 	if (cv_ptr && TEMPLATES_RECEIVED == 1) {
 	  FULL_FRAME = cv_ptr->image.clone();
-FRAME_COUNT++;
+	  FRAME_COUNT++;
 	  runTemplateMatching();
 	}
 	return;
@@ -207,7 +222,7 @@ FRAME_COUNT++;
   void templatesCallback(const face_tracker::templMatch msg)
   {
 	TEMPLATES_RECEIVED = 1;
-FRAME_COUNT = 0;
+	FRAME_COUNT = 0;
 
 	int num = msg.num;
 
@@ -238,6 +253,16 @@ FRAME_COUNT = 0;
 	  }
 	}
  	return;
+  }
+
+  void labelsCallback(const face_tracker::stringArray msg)
+  {
+	LABELS.clear();
+  	int num_labels = msg.labels.size();
+
+	for (int i = 0; i < num_labels; i++) {
+	  LABELS.push_back(msg.labels[i].data);
+	}
   }
 };
 
