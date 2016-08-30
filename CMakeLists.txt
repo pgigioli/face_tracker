@@ -198,5 +198,8 @@ include_directories(
 add_executable(YOLO_template_matching src/YOLO_template_matching.cpp)
 add_executable(face_tracker src/face_tracker.cpp)
 
+add_dependencies(YOLO_template_matching face_tracker_generate_messages_cpp)
+add_dependencies(face_tracker face_tracker_generate_messages_cpp)
+
 target_link_libraries(YOLO_template_matching ${catkin_LIBRARIES})
 target_link_libraries(face_tracker ${catkin_LIBRARIES})

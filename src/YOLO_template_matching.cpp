@@ -21,109 +21,105 @@ int TEMPLATES_RECEIVED = 0;
 int FRAME_W;
 int FRAME_H;
 int FRAME_AREA;
-int NUM_FACES;
+int NUM_OBJECTS;
 int FRAME_COUNT = 0;
 float TEMPL_SCALE;
-Mat FULL_FRAME;
 vector<Mat> TEMPLATES;
 vector<Rect> ROI_COORDS;
 vector<string> LABELS;
-//Mat TEMPLATES;
-//Rect ROI_COORDS;
+vector<int> CLASS_LIST;
 
 // define template matching class to run algorithm
 class yoloTemplateMatching
 {
-  // initialize subscribers and publishers
-  ros::NodeHandle nh;
-  image_transport::ImageTransport it;
-  image_transport::Subscriber image_sub;
-  ros::Subscriber template_sub;
-  ros::Publisher face_center_pub;
-  ros::Subscriber labels_sub;
+   // initialize subscribers and publishers
+   ros::NodeHandle nh;
+   image_transport::ImageTransport it;
+   image_transport::Subscriber image_sub;
+   ros::Subscriber template_sub;
+   ros::Publisher face_center_pub;
+   ros::Subscriber labels_sub;
 
 public:
-  yoloTemplateMatching() : it(nh)
-  {
-	// subscribe to camera frames and templates received from YOLO
-	image_sub = it.subscribe("/usb_cam/image_raw", 1,
-		&yoloTemplateMatching::frameCallback, this);
-	template_sub = nh.subscribe("/YOLO_templates", 1,
-		&yoloTemplateMatching::templatesCallback, this);
-	face_center_pub = nh.advertise<geometry_msgs::Point>("ROI_coordinate", 1);
+   yoloTemplateMatching() : it(nh)
+   {
+      // subscribe to camera frames and templates received from YOLO
+      image_sub = it.subscribe("/usb_cam/image_raw", 1,
+			       &yoloTemplateMatching::frameCallback, this);
+      template_sub = nh.subscribe("/YOLO_templates", 1,
+			 	  &yoloTemplateMatching::templatesCallback, this);
+      face_center_pub = nh.advertise<geometry_msgs::Point>("ROI_coordinate", 1);
 
-	// subscribe to labels from face recognition node
-	labels_sub = nh.subscribe("/face_labels", 1,
-		&yoloTemplateMatching::labelsCallback, this);
+      // subscribe to labels from face recognition node
+      labels_sub = nh.subscribe("/face_labels", 1,
+		                &yoloTemplateMatching::labelsCallback, this);
 
-        cv::namedWindow("Face Detector", WINDOW_NORMAL);
-  }
+      cv::namedWindow("Face Detector", WINDOW_NORMAL);
+   }
 
-  ~yoloTemplateMatching()
-  {
-	cv:destroyWindow("Face Detector");
-  }
+   ~yoloTemplateMatching()
+   {
+      cv:destroyWindow("Face Detector");
+   }
 
 private:
-  Rect getCroppedDimensions(Rect box, float scale)
-  {
-	// scale box dimensions
-	int newWidth = scale*box.width;
-	int newHeight = scale*box.height;
-	int newx = box.x - (scale - 1)*box.width/2;
-	int newy = box.y - (scale - 1)*box.height/2;
+   Rect getCroppedDimensions(Rect box, float scale)
+   {
+      // scale box dimensions
+      int newWidth = scale*box.width;
+      int newHeight = scale*box.height;
+      int newx = box.x - (scale - 1)*box.width/2;
+      int newy = box.y - (scale - 1)*box.height/2;
 
-	// ensure that dimensions remain within frame dimensions
-        if (newx < 0) newx = 0;
-        if (newy < 0) newy = 0;
-        if (newx + newWidth > FRAME_W) newWidth = FRAME_W - newx;
-        if (newy + newHeight > FRAME_H) newHeight = FRAME_H - newy;
+      // ensure that dimensions remain within frame dimensions
+      if (newx < 0) newx = 0;
+      if (newy < 0) newy = 0;
+      if (newx + newWidth > FRAME_W) newWidth = FRAME_W - newx;
+      if (newy + newHeight > FRAME_H) newHeight = FRAME_H - newy;
 
-	// return new dimensions
-	Rect cropDimensions = Rect(newx, newy, newWidth, newHeight);
-	return cropDimensions;
-  }
+      // return new dimensions
+      Rect cropDimensions = Rect(newx, newy, newWidth, newHeight);
+      return cropDimensions;
+   }
 
-  int checkThreshold(Mat matchingResult)
-  {
-	Mat checkResult = matchingResult.clone();
+   int checkThreshold(Mat matchingResult)
+   {
+      Mat checkResult = matchingResult.clone();
 
-	// check template max and min values of template matching and compare to threshold
-	float threshold = 0.3;
-	double minCheck, maxCheck;
-	Point minLocCheck, maxLocCheck;
-	minMaxLoc(checkResult, &minCheck, &maxCheck, &minLocCheck, &maxLocCheck);
+      // check template max and min values of template matching and compare to threshold
+      float threshold = 0.3;
+      double minCheck, maxCheck;
+      Point minLocCheck, maxLocCheck;
+      minMaxLoc(checkResult, &minCheck, &maxCheck, &minLocCheck, &maxLocCheck);
 
-	// if threshold surpassed, return a failure flag
-	if (minCheck > threshold) return 1;
-	else return 0;
-  }
+      // if threshold surpassed, return a failure flag
+      if (minCheck > threshold) return 1;
+      else return 0;
+   }
 
-  void runTemplateMatching()
-  {
-	// create local copies of full frame, templates, and ROI coordinates
-	Mat full_frame = FULL_FRAME.clone();
+   void runTemplateMatching(Mat full_frame)
+   {
+      // create local copies of templates, and ROI coordinates
+      for (int i = 0; i < NUM_OBJECTS; i++) {
+         Mat templates = TEMPLATES[i].clone();
+	 Rect roi_coords = ROI_COORDS[i];
+	 int Class = CLASS_LIST[i];
 
-	for (int i = 0; i < NUM_FACES; i++) {
-	  Mat templates = TEMPLATES[i].clone();
-	  Rect roi_coords = ROI_COORDS[i];
+	 // extract search frame out of full frame using ROI coordinates
+	 Mat searchFrame = full_frame.clone()(roi_coords);
 
-	  // extract search frame out of full frame using ROI coordinates
-	  Mat searchFrame = full_frame.clone()(roi_coords);
+	 // define matrix to contain template matching results
+	 Mat matchingResult;
 
-	  // define matrix to contain template matching results
-	  Mat matchingResult;
+	 // run template matching
+	 matchTemplate(searchFrame, templates, matchingResult, CV_TM_SQDIFF_NORMED);
 
-	  // run template matching
-	  matchTemplate(searchFrame, templates, matchingResult, CV_TM_SQDIFF_NORMED);
+	 // check if template matching failed to find a good result
+         int TMfailure = checkThreshold(matchingResult);
 
-	  // check if template matching failed to find a good result
-          int TMfailure = checkThreshold(matchingResult);
-
-	  // if template matching does not fail
-	  if (TMfailure == 0 && FRAME_COUNT < 30) {
-
-	    // normalize results between 0 and 1
+	 // if template matching does not fail
+	 if (TMfailure == 0 && FRAME_COUNT < 5) {
+            // normalize results between 0 and 1
 	    normalize(matchingResult, matchingResult, 0, 1, NORM_MINMAX, -1, Mat());
 
 	    // find location of best match
@@ -166,116 +162,121 @@ private:
 	    // draw template matched bbox
 	    Point topLeftCorner = Point(bbox.x, bbox.y);
 	    Point botRightCorner = Point(bbox.x + bbox.width, bbox.y + bbox.height);
-	    rectangle(full_frame, topLeftCorner, botRightCorner, Scalar(0,255,255), 2);
+	    if (Class == 0) rectangle(full_frame, topLeftCorner, botRightCorner, Scalar(255,255,0), 2);
+	    if (Class == 1) rectangle(full_frame, topLeftCorner, botRightCorner, Scalar(0,255,255), 2);
 
 	    // draw label on bounding box
 	    if (i+1 <= LABELS.size()) putText(full_frame, LABELS[i],
 		Point(bbox.x, bbox.y+bbox.height+15), FONT_HERSHEY_PLAIN, 1.0,
-		CV_RGB(255,165,0), 2.0);
+		      CV_RGB(255,165,0), 2.0);
 
 	    // draw template matched bbox center
-	    Point face_center(bbox.x + bbox.width/2, bbox.y + bbox.height/2);
-	    circle(full_frame, face_center, 2, Scalar(255,0,255), 2, 8, 0);
+	    //Point face_center(bbox.x + bbox.width/2, bbox.y + bbox.height/2);
+	    //circle(full_frame, face_center, 2, Scalar(255,0,255), 2, 8, 0);
 
 	    // publish focal point for face tracking
-	    geometry_msgs::Point focal_point;
-	    focal_point.x = face_center.x;
-	    focal_point.y = face_center.y;
+	    //geometry_msgs::Point focal_point;
+	    //focal_point.x = face_center.x;
+	    //focal_point.y = face_center.y;
 	    //face_center_pub.publish(focal_point);
-	  }
+         }
 
-          // display full frame, search image, and template image
-	//  imshow("search ROI", searchFrame);
+         // display full frame, search image, and template image
+	 // imshow("search ROI", searchFrame);
          // waitKey(3);
 
-          //imshow("template frame", templates);
-          //waitKey(3);
-	}
+         //imshow("template frame", templates);
+         //waitKey(3);
+      }
 
-        imshow("Face Detector", full_frame);
-        waitKey(3);
-        return;
-  }
+      imshow("Face Detector", full_frame);
+      waitKey(3);
+      return;
+   }
 
-  void frameCallback(const sensor_msgs::ImageConstPtr& msg)
-  {
-	cv_bridge::CvImagePtr cv_ptr;
+   void frameCallback(const sensor_msgs::ImageConstPtr& msg)
+   {
+      cv_bridge::CvImagePtr cv_ptr;
 
-	// convert sensor message into CV mat
-	try {
-	  cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-	}
-	catch (cv_bridge::Exception& e) {
-	  ROS_ERROR("cv_bridge exception: %s", e.what());
-	  return;
-	}
+      // convert sensor message into CV mat
+      try {
+         cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+      } catch (cv_bridge::Exception& e) {
+         ROS_ERROR("cv_bridge exception: %s", e.what());
+	 return;
+      }
 
-	// if templates received from YOLO node, run template matching
-	if (cv_ptr && TEMPLATES_RECEIVED == 1) {
-	  FULL_FRAME = cv_ptr->image.clone();
-	  FRAME_COUNT++;
-	  runTemplateMatching();
-	}
-	return;
-  }
+      Mat full_frame = cv_ptr->image.clone();
 
-  void templatesCallback(const face_tracker::templMatch msg)
-  {
-	TEMPLATES_RECEIVED = 1;
-	FRAME_COUNT = 0;
+      // if templates received from YOLO node, run template matching
+      if (TEMPLATES_RECEIVED == 1) {
+	 FRAME_COUNT++;
+	 runTemplateMatching(full_frame);
+      } else {
+	 imshow("Face Detector", full_frame);
+	 waitKey(3);
+         return;
+      }
+   }
 
-	int num = msg.num;
+   void templatesCallback(const face_tracker::templMatch msg)
+   {
+      FRAME_COUNT = 0;
 
-	// if faces found, define templates and ROI coordinates
-	if (num != 0) {
-	  TEMPL_SCALE = msg.scale;
-	  NUM_FACES = num;
+      int num = msg.num;
 
-	  TEMPLATES.clear();
-	  ROI_COORDS.clear();
+      // if faces found, define templates and ROI coordinates
+      if (num > 0) {
+         TEMPLATES_RECEIVED = 1;
+         TEMPL_SCALE = msg.scale;
+	 NUM_OBJECTS = num;
 
-	  for (int i = 0; i < num; i++) {
-	  	// convert image message into cv mat
-  	  	cv_bridge::CvImagePtr cv_template;
-  	  	cv_template = cv_bridge::toCvCopy(msg.templates[i], sensor_msgs::image_encodings::BGR8);
+	 TEMPLATES.clear();
+	 ROI_COORDS.clear();
+	 CLASS_LIST.clear();
 
-		TEMPLATES.push_back(cv_template->image.clone());
+	 for (int i = 0; i < num; i++) {
+	    // convert image message into cv mat
+  	    cv_bridge::CvImagePtr cv_template;
+  	    cv_template = cv_bridge::toCvCopy(msg.templates[i], sensor_msgs::image_encodings::BGR8);
+	    CLASS_LIST.push_back(msg.classes[i]);
+	    TEMPLATES.push_back(cv_template->image.clone());
 
-       	  	// get ROI coordinates from message
-  	  	face_tracker::rect rect_msg = msg.ROIcoords[i];
-  	  	Rect searchROI;
-  	  	searchROI.x = rect_msg.x;
-  	  	searchROI.y = rect_msg.y;
-  	  	searchROI.width = rect_msg.w;
-  	  	searchROI.height = rect_msg.h;
+       	    // get ROI coordinates from message
+  	    face_tracker::rect rect_msg = msg.ROIcoords[i];
+  	    Rect searchROI;
+  	    searchROI.x = rect_msg.x;
+  	    searchROI.y = rect_msg.y;
+  	    searchROI.width = rect_msg.w;
+  	    searchROI.height = rect_msg.h;
 
-	  	ROI_COORDS.push_back(searchROI);
-	  }
-	}
- 	return;
-  }
+	    ROI_COORDS.push_back(searchROI);
+         }
+      }
+      return;
+   }
 
-  void labelsCallback(const face_tracker::stringArray msg)
-  {
-	LABELS.clear();
-  	int num_labels = msg.labels.size();
+   void labelsCallback(const face_tracker::stringArray msg)
+   {
+      LABELS.clear();
+      int num_labels = msg.labels.size();
 
-	for (int i = 0; i < num_labels; i++) {
-	  LABELS.push_back(msg.labels[i].data);
-	}
-  }
+      for (int i = 0; i < num_labels; i++) {
+         LABELS.push_back(msg.labels[i].data);
+      }
+   }
 };
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "YOLO_template_matching");
+   ros::init(argc, argv, "YOLO_template_matching");
 
-  // get frame dimensions
-  ros::param::get("/usb_cam/image_width", FRAME_W);
-  ros::param::get("/usb_cam/image_height", FRAME_H);
-  FRAME_AREA = FRAME_W * FRAME_H;
+   // get frame dimensions
+   ros::param::get("/usb_cam/image_width", FRAME_W);
+   ros::param::get("/usb_cam/image_height", FRAME_H);
+   FRAME_AREA = FRAME_W * FRAME_H;
 
-  yoloTemplateMatching ytm;
-  ros::spin();
-  return 0;
+   yoloTemplateMatching ytm;
+   ros::spin();
+   return 0;
 }
